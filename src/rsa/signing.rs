@@ -38,7 +38,7 @@ pub struct RsaKeyPair {
     public_key: RsaSubjectPublicKey,
 }
 
-derive_debug_via_field!(RsaKeyPair, stringify!(RsaKeyPair), public_key);
+derive_debug_via_field!(RsaKeyPair, stringify!(RsaKeyPair), public);
 
 impl RsaKeyPair {
     /// Parses an unencrypted PKCS#8-encoded RSA private key.
@@ -239,6 +239,8 @@ impl RsaKeyPair {
             65537,
         )?;
 
+        let n = &public_key.n().value;
+
         // 6.4.1.4.3 says to skip 6.4.1.2.1 Step 2.
 
         // 6.4.1.4.3 Step 3.
@@ -258,7 +260,7 @@ impl RsaKeyPair {
         // TODO: First, stop if `p < (√2) * 2**((nBits/2) - 1)`.
         //
         // Second, stop if `p > 2**(nBits/2) - 1`.
-        let half_n_bits = public_key.n_bits.half_rounded_up();
+        let half_n_bits = public_key.n().len_bits().half_rounded_up();
         if p_bits != half_n_bits {
             return Err(KeyRejected::inconsistent_components());
         }
@@ -279,7 +281,7 @@ impl RsaKeyPair {
         // TODO: Step 5.h: Verify GCD(p - 1, e) == 1.
 
         let q_mod_n_decoded = q
-            .to_elem(&public_key.n)
+            .to_elem(n)
             .map_err(|error::Unspecified| KeyRejected::inconsistent_components())?;
 
         // TODO: Step 5.i
@@ -293,15 +295,11 @@ impl RsaKeyPair {
         // 0 < q < p < n. We check that q and p are close to sqrt(n) and then
         // assume that these preconditions are enough to let us assume that
         // checking p * q == 0 (mod n) is equivalent to checking p * q == n.
-        let q_mod_n = bigint::elem_mul(
-            public_key.n.oneRR().as_ref(),
-            q_mod_n_decoded.clone(),
-            &public_key.n,
-        );
+        let q_mod_n = bigint::elem_mul(n.oneRR().as_ref(), q_mod_n_decoded.clone(), &n);
         let p_mod_n = p
-            .to_elem(&public_key.n)
+            .to_elem(n)
             .map_err(|error::Unspecified| KeyRejected::inconsistent_components())?;
-        let pq_mod_n = bigint::elem_mul(&q_mod_n, p_mod_n, &public_key.n);
+        let pq_mod_n = bigint::elem_mul(&q_mod_n, p_mod_n, n);
         if !pq_mod_n.is_zero() {
             return Err(KeyRejected::inconsistent_components());
         }
@@ -320,7 +318,7 @@ impl RsaKeyPair {
         }
         // XXX: This check should be `d < LCM(p - 1, q - 1)`, but we don't have
         // a good way of calculating LCM, so it is omitted, as explained above.
-        d.verify_less_than_modulus(&public_key.n)
+        d.verify_less_than_modulus(n)
             .map_err(|error::Unspecified| KeyRejected::inconsistent_components())?;
         if !d.is_odd() {
             return Err(KeyRejected::invalid_component());
@@ -359,9 +357,9 @@ impl RsaKeyPair {
         bigint::verify_inverses_consttime(&qInv, q_mod_p, &p.modulus)
             .map_err(|error::Unspecified| KeyRejected::inconsistent_components())?;
 
-        let qq = bigint::elem_mul(&q_mod_n, q_mod_n_decoded, &public_key.n).into_modulus::<QQ>()?;
+        let qq = bigint::elem_mul(&q_mod_n, q_mod_n_decoded, n).into_modulus::<QQ>()?;
 
-        let public_key_serialized = RsaSubjectPublicKey::from_n_and_e(n, e);
+        let public_key_serialized = RsaSubjectPublicKey::from(&public_key);
 
         Ok(Self {
             p,
@@ -374,14 +372,17 @@ impl RsaKeyPair {
         })
     }
 
+    /// Returns a reference to the public key.
+    pub fn public(&self) -> &public::Key {
+        &self.public
+    }
+
     /// Returns the length in bytes of the key pair's public modulus.
     ///
     /// A signature has the same length as the public modulus.
+    #[inline]
     pub fn public_modulus_len(&self) -> usize {
-        self.public_key
-            .modulus()
-            .big_endian_without_leading_zero()
-            .len()
+        self.public().n().len()
     }
 }
 
@@ -405,15 +406,25 @@ impl AsRef<[u8]> for RsaSubjectPublicKey {
 
 derive_debug_self_as_ref_hex_bytes!(RsaSubjectPublicKey);
 
-impl RsaSubjectPublicKey {
-    fn from_n_and_e(n: io::Positive, e: io::Positive) -> Self {
+impl From<&public::Key> for RsaSubjectPublicKey {
+    fn from(key: &public::Key) -> Self {
+        // The public key `n` and `e` are always positive.
+        fn positive(bytes: &[u8]) -> io::Positive {
+            io::Positive::from_be_bytes(untrusted::Input::from(bytes)).unwrap()
+        }
+
+        let n = key.n().to_be_bytes();
+        let e = key.e().to_be_bytes();
+
         let bytes = der_writer::write_all(der::Tag::Sequence, &|output| {
-            der_writer::write_positive_integer(output, &n);
-            der_writer::write_positive_integer(output, &e);
+            der_writer::write_positive_integer(output, &positive(&n));
+            der_writer::write_positive_integer(output, &positive(&e));
         });
         Self(bytes)
     }
+}
 
+impl RsaSubjectPublicKey {
     /// The public modulus (n).
     pub fn modulus(&self) -> io::Positive {
         // Parsing won't fail because we serialized it ourselves.
@@ -538,7 +549,7 @@ impl RsaKeyPair {
         msg: &[u8],
         signature: &mut [u8],
     ) -> Result<(), error::Unspecified> {
-        let mod_bits = self.public.n_bits;
+        let mod_bits = self.public.n().len_bits();
         if signature.len() != mod_bits.as_usize_bytes_rounded_up() {
             return Err(error::Unspecified);
         }
@@ -549,7 +560,7 @@ impl RsaKeyPair {
         // RFC 8017 Section 5.1.2: RSADP, using the Chinese Remainder Theorem
         // with Garner's algorithm.
 
-        let n = &self.public.n;
+        let n = &self.public.n().value;
 
         // Step 1. The value zero is also rejected.
         let base = bigint::Elem::from_be_bytes_padded(untrusted::Input::from(signature), n)?;
@@ -590,7 +601,7 @@ impl RsaKeyPair {
         // minimum value, since the relationship of `e` to `d`, `p`, and `q` is
         // not verified during `KeyPair` construction.
         {
-            let verify = bigint::elem_exp_vartime(m.clone(), self.public.e, n);
+            let verify = bigint::elem_exp_vartime(m.clone(), self.public.e().0, n);
             let verify = verify.into_unencoded(n);
             bigint::elem_verify_equal_consttime(&verify, &c)?;
         }
@@ -624,7 +635,7 @@ mod tests {
         let key_pair = signature::RsaKeyPair::from_der(PRIVATE_KEY_DER).unwrap();
 
         // The output buffer is one byte too short.
-        let mut signature = vec![0; key_pair.public_modulus_len() - 1];
+        let mut signature = vec![0; key_pair.public().n().len() - 1];
 
         assert!(key_pair
             .sign(&signature::RSA_PKCS1_SHA256, &rng, MESSAGE, &mut signature)

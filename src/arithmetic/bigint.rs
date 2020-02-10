@@ -38,7 +38,7 @@
 
 use crate::{
     arithmetic::montgomery::*,
-    bits, bssl, c, error,
+    bits, bssl, c, debug, error,
     limb::{self, Limb, LimbMask, LIMB_BITS, LIMB_BYTES},
 };
 use alloc::{borrow::ToOwned as _, boxed::Box, vec, vec::Vec};
@@ -221,11 +221,27 @@ pub struct Modulus<M> {
     oneRR: One<M, RR>,
 }
 
+impl<M: PublicModulus> Modulus<M> {
+    #[allow(clippy::wrong_self_convention)] // Clippy false positive?
+    pub fn to_be_bytes(&self) -> Box<[u8]> {
+        let mut padded = vec![0u8; self.limbs.len() * LIMB_BYTES];
+        // See Falko Strenzke, "Manger's Attack revisited", ICICS 2010.
+        limb::big_endian_from_limbs(&self.limbs, &mut padded);
+        strip_leading_zeros(&padded)
+    }
+}
+
 impl<M: PublicModulus> core::fmt::Debug for Modulus<M> {
     fn fmt(&self, fmt: &mut ::core::fmt::Formatter) -> Result<(), ::core::fmt::Error> {
-        fmt.debug_struct("Modulus")
-            // TODO: Print modulus value.
-            .finish()
+        let mut state = fmt.debug_tuple("Modulus");
+
+        #[cfg(feature = "alloc")]
+        let state = {
+            let value = self.to_be_bytes(); // XXX: Allocates
+            state.field(&debug::HexStr(&value))
+        };
+
+        state.finish()
     }
 }
 
@@ -685,6 +701,11 @@ impl PublicExponent {
         }
 
         Ok(Self(value))
+    }
+
+    #[inline]
+    pub fn to_be_bytes(self) -> Box<[u8]> {
+        strip_leading_zeros(&u64::to_be_bytes(self.0))
     }
 }
 
@@ -1376,6 +1397,18 @@ prefixed_extern! {
     fn limbs_mul_add_limb(r: *mut Limb, a: *const Limb, b: Limb, num_limbs: c::size_t) -> Limb;
 }
 
+fn strip_leading_zeros(value: &[u8]) -> Box<[u8]> {
+    fn index_after_zeros(bytes: &[u8]) -> usize {
+        for (i, &value) in bytes.iter().enumerate() {
+            if value != 0 {
+                return i;
+            }
+        }
+        bytes.len()
+    }
+    (&value[index_after_zeros(value)..]).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1512,11 +1545,13 @@ mod tests {
 
     #[test]
     fn test_modulus_debug() {
-        let (modulus, _) = Modulus::<M>::from_be_bytes_with_bit_length(untrusted::Input::from(
-            &[0xff; LIMB_BYTES * MODULUS_MIN_LIMBS],
-        ))
-        .unwrap();
-        assert_eq!("Modulus", format!("{:?}", modulus));
+        let (modulus, _) =
+            Modulus::<M>::from_be_bytes_with_bit_length(untrusted::Input::from(&[0xff; 1024 / 8]))
+                .unwrap();
+        assert_eq!(
+            "Modulus(\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\")",
+            format!("{:?}", modulus)
+        );
     }
 
     #[test]
