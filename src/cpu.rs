@@ -60,6 +60,10 @@ pub(crate) fn features() -> Features {
     Features(())
 }
 
+#[cfg_attr(
+    not(any(target_arch = "arm", target_arch = "aarch64")),
+    allow(dead_code)
+)]
 pub(crate) mod arm {
     #[cfg(all(
         any(target_os = "android", target_os = "linux"),
