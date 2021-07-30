@@ -1347,7 +1347,8 @@ fn limbs_mont_square(r: &mut [Limb], m: &[Limb], n0: &N0) {
     target_arch = "aarch64",
     target_arch = "arm",
     target_arch = "x86_64",
-    target_arch = "x86"
+    target_arch = "x86",
+    target_arch = "powerpc64"
 ))]
 prefixed_extern! {
     // `r` and/or 'a' and/or 'b' may alias.

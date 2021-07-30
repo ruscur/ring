@@ -8,13 +8,14 @@
  */
 /* This file is derived from ppccap.c in OpenSSL */
 
-
+// Must be included for bn_mul_mont to have the correct symbol
+#include <ring-core/base.h>
 
 int bn_mul_mont_int(unsigned long *rp, const unsigned long *ap, const unsigned long *bp,
                     const unsigned long *np, const unsigned long *n0, int num);
 int bn_mul4x_mont_int(unsigned long *rp, const unsigned long *ap, const unsigned long *bp,
                       const unsigned long *np, const unsigned long *n0, int num);
-int GFp_bn_mul_mont(unsigned long *rp, const unsigned long *ap, const unsigned long *bp,
+int bn_mul_mont(unsigned long *rp, const unsigned long *ap, const unsigned long *bp,
                 const unsigned long *np, const unsigned long *n0, int num)
 {
     if (num < 4)
